@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">秋日状态栏</string>
+    <string name="xposed_description">高级状态栏修改。始终隐藏状态栏 VoLTE / VoNR 图标。</string>
+
+    <string-array name="xposed_scope">
+        <item>com.android.systemui</item>
+    </string-array>
+</resources>
