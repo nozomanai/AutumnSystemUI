@@ -4,10 +4,10 @@
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
-$Adb = "D:\SOFT\platform-tools\adb.exe"
-if (-not (Test-Path $Adb)) { $Adb = "adb" }
-$Jadx = "D:\PROGRAM\SOFT\jadx-1.5.6\bin\jadx.bat"
-if (-not (Test-Path $Jadx)) { throw "找不到 jadx: $Jadx" }
+$Adb = @("D:\SOFT\adb\adb.exe", "D:\SOFT\platform-tools\adb.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $Adb) { $Adb = "adb" }
+$Jadx = @("D:\SOFT\jadx-1.5.6\bin\jadx.bat", "D:\PROGRAM\SOFT\jadx-1.5.6\bin\jadx.bat") | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $Jadx) { throw "找不到 jadx" }
 
 $Out = Join-Path $Root "decompiled"
 $ApkDir = Join-Path $Out "apk"
@@ -54,7 +54,9 @@ foreach ($package in $packages) {
         $decoded = Join-Path $JavaDir "$package-$apkIndex"
         Write-Host "反编译到 $decoded"
         & $Jadx -d $decoded --show-bad-code -j 4 --no-debug-info $local
-        if ($LASTEXITCODE -ne 0) { throw "jadx 失败: $local" }
+        # jadx 退出码 1 表示部分类反编译失败，源码目录仍然可用。
+        if ($LASTEXITCODE -gt 1) { throw "jadx 失败: $local (exit $LASTEXITCODE)" }
+        if ($LASTEXITCODE -ne 0) { Write-Host "jadx 有反编译错误，已保留可阅读源码: $local" }
         $apkIndex++
     }
 }

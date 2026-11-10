@@ -100,6 +100,35 @@ object SystemUiHooks {
         } catch (error: Throwable) {
             note("dual signal: ${error.javaClass.simpleName}")
         }
+        try {
+            val state = Class.forName(
+                "com.android.systemui.statusbar.anim.MiuiStatusBarFolmeViewState",
+                false,
+                loader,
+            )
+            val properties = Class.forName(
+                "com.android.systemui.statusbar.anim.FolmeProperties",
+                false,
+                loader,
+            )
+            val animateTo = state.getDeclaredMethod("animateTo", View::class.java, properties)
+            val applyToView = state.getDeclaredMethod(
+                "applyToView",
+                View::class.java,
+                java.lang.Boolean.TYPE,
+            )
+            val retarget = { chain: XposedInterface.Chain ->
+                val icon = chain.getArg(0) as? View
+                val iconState = chain.thisObject
+                if (icon != null && iconState != null) DualSignalLayout.beforeApply(iconState, icon)
+                chain.proceed()
+            }
+            hook(animateTo, block = retarget)
+            hook(applyToView, block = retarget)
+            note("dual signal move hooked")
+        } catch (error: Throwable) {
+            note("dual signal move: ${error.javaClass.simpleName}")
+        }
     }
 
     private fun installHeaderExpansion(loader: ClassLoader) {

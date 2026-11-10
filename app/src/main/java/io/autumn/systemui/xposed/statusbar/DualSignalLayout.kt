@@ -7,20 +7,31 @@ import android.view.ViewGroup
 import android.widget.TextView
 import io.autumn.systemui.ModuleConfig
 import io.github.libxposed.api.XposedModule
+import java.lang.reflect.Field
 import java.util.Collections
+import java.util.HashMap
 import java.util.WeakHashMap
 
 /**
  * 把状态栏里并排的两张卡信号收成一列：一张在上，一张在下。
  * 高度保持不变，水平方向再拉长一截；下排底边对齐旁边图标。
+ *
+ * 图标位置变化时，系统会把 translationX 动画到并排坐标，并把缩放收回 1。
+ * 动画开始前先改掉这个目标，两张卡才会一起滑到叠放位置，而不是先被拉开再弹回来。
  */
 object DualSignalLayout {
     private const val MOBILE = "ModernStatusBarMobileView"
+    private const val CONTAINER = "MiuiStatusIconContainer"
     private const val SPEED = "NetworkSpeedView"
     private const val SCALE_Y = 0.42f
     private const val SCALE_X = 0.60f
     private val containers = Collections.newSetFromMap(WeakHashMap<ViewGroup, Boolean>())
+    private val patched = Collections.newSetFromMap(WeakHashMap<View, Boolean>())
+    private val fields = HashMap<String, Field?>()
     private val main = Handler(Looper.getMainLooper())
+    private var idsReady = false
+    private var stateTag = View.NO_ID
+    private var translationTag = View.NO_ID
 
     @Volatile
     var enabled: Boolean = true
@@ -42,33 +53,54 @@ object DualSignalLayout {
 
     fun apply(container: ViewGroup) {
         containers.add(container)
-        val mobiles = (0 until container.childCount)
-            .map { container.getChildAt(it) }
-            .filter { it.javaClass.name.endsWith(MOBILE) && it.width > 0 && it.alpha > 0.01f }
-        if (!enabled || mobiles.size < 2) {
-            mobiles.forEach(::reset)
-            return
-        }
-        val ordered = mobiles.sortedWith(compareBy<View> { subId(it) }.thenBy { it.translationX })
-        val top = ordered.first()
-        val bottom = ordered.last()
-        val ref = referenceBand(container, mobiles) ?: return
-        val leftEdge = minOf(top.translationX, bottom.translationX)
-        val targetRight = maxOf(top.translationX + top.width, bottom.translationX + bottom.width)
-        val visualLeft = targetRight - maxOf(top.width, bottom.width) * SCALE_X
-        val shift = visualLeft - leftEdge
-        if (shift > 1f) {
-            for (index in 0 until container.childCount) {
-                val child = container.getChildAt(index)
-                if (child === top || child === bottom) continue
-                if (child.translationX + child.width <= leftEdge + 1f) {
-                    child.translationX += shift
+        try {
+            val mobiles = visibleMobiles(container)
+            if (!enabled || mobiles.size < 2) {
+                mobiles.forEach(::reset)
+                return
+            }
+            val placed = placement(mobiles) ?: return
+            val ref = referenceBand(container, mobiles) ?: return
+            if (placed.shift > 1f) {
+                for (index in 0 until container.childCount) {
+                    val child = container.getChildAt(index)
+                    if (child === placed.top || child === placed.bottom) continue
+                    if (systemX(child) + child.width <= placed.leftEdge + 1f) {
+                        commitX(child, systemX(child) + placed.shift)
+                    }
                 }
             }
+            val lowerBottom = ref.bottom + placed.bottom.height * 0.08f
+            place(placed.bottom, placed.targetRight, lowerBottom)
+            place(placed.top, placed.targetRight, lowerBottom - placed.bottom.height * SCALE_Y)
+        } finally {
+            patched.clear()
         }
-        val lowerBottom = ref.bottom + bottom.height * 0.08f
-        place(bottom, targetRight, lowerBottom)
-        place(top, targetRight, lowerBottom - bottom.height * SCALE_Y)
+    }
+
+    /**
+     * 系统算完并排坐标之后、Folme 开动画之前调用。
+     * 把目标 translationX / 缩放改成叠放结果，移动过程就沿着最终位置走。
+     */
+    fun beforeApply(state: Any, view: View) {
+        if (!enabled || !shown(state)) return
+        val container = view.parent as? ViewGroup ?: return
+        if (!container.javaClass.name.endsWith(CONTAINER)) return
+        val mobiles = visibleMobiles(container)
+        if (mobiles.size < 2) return
+        val placed = placement(mobiles) ?: return
+        if (!placed.fromLayout) return
+        val stacked = view === placed.top || view === placed.bottom
+        val tighten = !stacked && placed.shift > 1f && systemX(view) + view.width <= placed.leftEdge + 1f
+        if (!stacked && !tighten) return
+        if (stacked) {
+            writeFloat(state, "translationX", stackedX(view, placed.targetRight))
+            writeFloat(state, "scaleX", SCALE_X)
+            writeFloat(state, "scaleY", SCALE_Y)
+        } else {
+            writeFloat(state, "translationX", systemX(view) + placed.shift)
+        }
+        patched.add(view)
     }
 
     /** 高度用 [SCALE_Y]，宽度用 [SCALE_X]。底边放到 [bottomEdge]，右边缘对齐 [targetRight]。 */
@@ -77,9 +109,135 @@ object DualSignalLayout {
         view.pivotY = view.height / 2f
         view.scaleX = SCALE_X
         view.scaleY = SCALE_Y
-        view.translationX = targetRight - view.width * (1f + SCALE_X) / 2f
+        commitX(view, stackedX(view, targetRight))
         view.translationY = bottomEdge - view.top - view.height * (1f + SCALE_Y) / 2f
     }
+
+    /** 动画已经朝叠放目标走时，不要再把当前位置拽到终点。 */
+    private fun commitX(view: View, x: Float) {
+        if (view in patched && translationAnimating(view)) return
+        view.translationX = x
+    }
+
+    private fun visibleMobiles(container: ViewGroup): List<View> {
+        return (0 until container.childCount)
+            .map { container.getChildAt(it) }
+            .filter { it.javaClass.name.endsWith(MOBILE) && it.width > 0 && it.alpha > 0.01f }
+    }
+
+    private fun placement(mobiles: List<View>): Placement? {
+        if (mobiles.size < 2) return null
+        val ordered = mobiles.sortedWith(compareBy<View> { subId(it) }.thenBy { systemX(it) })
+        val top = ordered.first()
+        val bottom = ordered.last()
+        val topX = systemX(top)
+        val bottomX = systemX(bottom)
+        val leftEdge = minOf(topX, bottomX)
+        val targetRight = maxOf(topX + top.width, bottomX + bottom.width)
+        val visualLeft = targetRight - maxOf(top.width, bottom.width) * SCALE_X
+        val fromLayout = layoutX(top) != null && layoutX(bottom) != null
+        return Placement(top, bottom, targetRight, leftEdge, visualLeft - leftEdge, fromLayout)
+    }
+
+    /** 系统排版坐标。视图自己的 translationX 在位移动画过程中是中间值，不能拿来当目标。 */
+    private fun systemX(view: View): Float = layoutX(view) ?: view.translationX
+
+    private fun layoutX(view: View): Float? {
+        val state = iconState(view) ?: return null
+        return readFloat(state, "layoutTranslationX")
+    }
+
+    private fun stackedX(view: View, targetRight: Float): Float {
+        return targetRight - view.width * (1f + SCALE_X) / 2f
+    }
+
+    private fun shown(state: Any): Boolean {
+        val alpha = readFloat(state, "alpha")
+        if (alpha != null && alpha <= 0f) return false
+        val visible = readInt(state, "visibleState")
+        return visible == null || visible != 2
+    }
+
+    private fun translationAnimating(view: View): Boolean {
+        ensureIds(view)
+        if (translationTag == View.NO_ID) return false
+        return view.getTag(translationTag) != null
+    }
+
+    private fun iconState(view: View): Any? {
+        ensureIds(view)
+        if (stateTag == View.NO_ID) return null
+        return view.getTag(stateTag)
+    }
+
+    private fun ensureIds(view: View) {
+        if (idsReady) return
+        idsReady = true
+        val resources = view.resources
+        val packages = listOf(view.context.packageName, "com.android.systemui")
+        for (pkg in packages) {
+            if (stateTag == View.NO_ID) {
+                val id = resources.getIdentifier("status_bar_view_state_tag", "id", pkg)
+                if (id != 0) stateTag = id
+            }
+            if (translationTag == View.NO_ID) {
+                val id = resources.getIdentifier("folme_translation_x_animator_tag", "id", pkg)
+                if (id != 0) translationTag = id
+            }
+        }
+    }
+
+    private fun writeFloat(target: Any, name: String, value: Float) {
+        val field = findField(target.javaClass, name) ?: return
+        try {
+            field.setFloat(target, value)
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun readFloat(target: Any, name: String): Float? {
+        val field = findField(target.javaClass, name) ?: return null
+        return try {
+            field.getFloat(target)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun readInt(target: Any, name: String): Int? {
+        val field = findField(target.javaClass, name) ?: return null
+        return try {
+            field.getInt(target)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun findField(type: Class<*>, name: String): Field? {
+        val key = type.name + "#" + name
+        if (fields.containsKey(key)) return fields[key]
+        var cursor: Class<*>? = type
+        var found: Field? = null
+        while (cursor != null && found == null) {
+            try {
+                found = cursor.getDeclaredField(name)
+                found.isAccessible = true
+            } catch (_: NoSuchFieldException) {
+                cursor = cursor.superclass
+            }
+        }
+        fields[key] = found
+        return found
+    }
+
+    private data class Placement(
+        val top: View,
+        val bottom: View,
+        val targetRight: Float,
+        val leftEdge: Float,
+        val shift: Float,
+        val fromLayout: Boolean,
+    )
 
     /** 旁边图标的上下沿。网速是两行字，底部和电池齐，用它做参考。 */
     private fun referenceBand(container: ViewGroup, mobiles: List<View>): Band? {
