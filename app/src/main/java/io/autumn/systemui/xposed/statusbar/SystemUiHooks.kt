@@ -63,6 +63,7 @@ object SystemUiHooks {
         if (!frameworkReady) {
             frameworkReady = true
             VolteVisibility.installPrefs(xposed)
+            DualSignalLayout.installPrefs(xposed)
             installFrameworkHooks()
             xposed.installApplicationHook()
         }
@@ -70,7 +71,35 @@ object SystemUiHooks {
         hookLoadClass()
         loadIndexedClasses(loader)
         installHeaderExpansion(loader)
+        installDualSignal(loader)
         scheduleReport()
+    }
+
+    private fun installDualSignal(loader: ClassLoader) {
+        try {
+            val container = Class.forName(
+                "com.android.systemui.statusbar.views.MiuiStatusIconContainer",
+                false,
+                loader,
+            )
+            val onLayout = container.getDeclaredMethod(
+                "onLayout",
+                java.lang.Boolean.TYPE,
+                java.lang.Integer.TYPE,
+                java.lang.Integer.TYPE,
+                java.lang.Integer.TYPE,
+                java.lang.Integer.TYPE,
+            )
+            hook(onLayout) { chain ->
+                chain.proceed()
+                val view = chain.thisObject as? android.view.ViewGroup ?: return@hook null
+                DualSignalLayout.apply(view)
+                null
+            }
+            note("dual signal stack hooked")
+        } catch (error: Throwable) {
+            note("dual signal: ${error.javaClass.simpleName}")
+        }
     }
 
     private fun installHeaderExpansion(loader: ClassLoader) {

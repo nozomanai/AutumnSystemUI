@@ -13,6 +13,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CellTower
+import androidx.compose.material.icons.outlined.SignalCellularAlt
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
@@ -33,6 +34,7 @@ import io.autumn.systemui.AutumnApp
 import io.autumn.systemui.ModuleConfig
 import io.autumn.systemui.report.HookReportStore
 import io.autumn.systemui.ui.component.SegmentedColumn
+import io.autumn.systemui.ui.component.SegmentedDivider
 import io.autumn.systemui.ui.component.TonalMessage
 import io.github.libxposed.service.XposedService
 
@@ -43,13 +45,24 @@ fun StatusBarPage() {
     var hideVolte by remember(prefs) {
         mutableStateOf(prefs?.getBoolean(ModuleConfig.KEY_HIDE_VOLTE_COLLAPSED, true) ?: true)
     }
+    var dualSignal by remember(prefs) {
+        mutableStateOf(prefs?.getBoolean(ModuleConfig.KEY_DUAL_SIGNAL, true) ?: true)
+    }
     DisposableEffect(prefs) {
-        if (prefs != null && !prefs.contains(ModuleConfig.KEY_HIDE_VOLTE_COLLAPSED)) {
-            prefs.edit().putBoolean(ModuleConfig.KEY_HIDE_VOLTE_COLLAPSED, true).apply()
-        }
+        prefs?.edit()?.apply {
+            if (!prefs.contains(ModuleConfig.KEY_HIDE_VOLTE_COLLAPSED)) {
+                putBoolean(ModuleConfig.KEY_HIDE_VOLTE_COLLAPSED, true)
+            }
+            if (!prefs.contains(ModuleConfig.KEY_DUAL_SIGNAL)) {
+                putBoolean(ModuleConfig.KEY_DUAL_SIGNAL, true)
+            }
+        }?.apply()
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { shared, key ->
             if (key == null || key == ModuleConfig.KEY_HIDE_VOLTE_COLLAPSED) {
                 hideVolte = shared.getBoolean(ModuleConfig.KEY_HIDE_VOLTE_COLLAPSED, true)
+            }
+            if (key == null || key == ModuleConfig.KEY_DUAL_SIGNAL) {
+                dualSignal = shared.getBoolean(ModuleConfig.KEY_DUAL_SIGNAL, true)
             }
         }
         prefs?.registerOnSharedPreferenceChangeListener(listener)
@@ -100,6 +113,30 @@ fun StatusBarPage() {
                         onCheckedChange = { checked ->
                             hideVolte = checked
                             prefs?.edit()?.putBoolean(ModuleConfig.KEY_HIDE_VOLTE_COLLAPSED, checked)?.apply()
+                        },
+                    )
+                },
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+            )
+            SegmentedDivider()
+            ListItem(
+                modifier = Modifier.clickable(enabled = prefs != null) {
+                    val next = !dualSignal
+                    dualSignal = next
+                    prefs?.edit()?.putBoolean(ModuleConfig.KEY_DUAL_SIGNAL, next)?.apply()
+                },
+                leadingContent = { Icon(Icons.Outlined.SignalCellularAlt, contentDescription = null) },
+                headlineContent = { Text("双排信号") },
+                supportingContent = {
+                    Text("两张卡的信号上下叠放。关闭后恢复系统原来的并排显示。")
+                },
+                trailingContent = {
+                    Switch(
+                        checked = dualSignal,
+                        enabled = prefs != null,
+                        onCheckedChange = { checked ->
+                            dualSignal = checked
+                            prefs?.edit()?.putBoolean(ModuleConfig.KEY_DUAL_SIGNAL, checked)?.apply()
                         },
                     )
                 },
