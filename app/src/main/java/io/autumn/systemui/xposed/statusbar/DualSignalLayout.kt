@@ -12,11 +12,13 @@ import java.util.WeakHashMap
 
 /**
  * 把状态栏里并排的两张卡信号收成一列：一张在上，一张在下。
- * 每排按一半缩放，大小接近系统「合并」图标；下排底边对齐旁边图标。
+ * 高度保持不变，水平方向再拉长一截；下排底边对齐旁边图标。
  */
 object DualSignalLayout {
     private const val MOBILE = "ModernStatusBarMobileView"
     private const val SPEED = "NetworkSpeedView"
+    private const val SCALE_Y = 0.42f
+    private const val SCALE_X = 0.60f
     private val containers = Collections.newSetFromMap(WeakHashMap<ViewGroup, Boolean>())
     private val main = Handler(Looper.getMainLooper())
 
@@ -51,10 +53,9 @@ object DualSignalLayout {
         val top = ordered.first()
         val bottom = ordered.last()
         val ref = referenceBand(container, mobiles) ?: return
-        val scale = 0.42f
         val leftEdge = minOf(top.translationX, bottom.translationX)
         val targetRight = maxOf(top.translationX + top.width, bottom.translationX + bottom.width)
-        val visualLeft = targetRight - maxOf(top.width, bottom.width) * scale
+        val visualLeft = targetRight - maxOf(top.width, bottom.width) * SCALE_X
         val shift = visualLeft - leftEdge
         if (shift > 1f) {
             for (index in 0 until container.childCount) {
@@ -66,18 +67,18 @@ object DualSignalLayout {
             }
         }
         val lowerBottom = ref.bottom + bottom.height * 0.08f
-        place(bottom, targetRight, scale, lowerBottom)
-        place(top, targetRight, scale, lowerBottom - bottom.height * scale)
+        place(bottom, targetRight, lowerBottom)
+        place(top, targetRight, lowerBottom - bottom.height * SCALE_Y)
     }
 
-    /** 把缩放后的底边放到 [bottomEdge]。下排对齐旁边图标，上排紧挨在它上面。 */
-    private fun place(view: View, targetRight: Float, scale: Float, bottomEdge: Float) {
+    /** 高度用 [SCALE_Y]，宽度用 [SCALE_X]。底边放到 [bottomEdge]，右边缘对齐 [targetRight]。 */
+    private fun place(view: View, targetRight: Float, bottomEdge: Float) {
         view.pivotX = view.width / 2f
         view.pivotY = view.height / 2f
-        view.scaleX = scale
-        view.scaleY = scale
-        view.translationX = targetRight - view.width * (1f + scale) / 2f
-        view.translationY = bottomEdge - view.top - view.height * (1f + scale) / 2f
+        view.scaleX = SCALE_X
+        view.scaleY = SCALE_Y
+        view.translationX = targetRight - view.width * (1f + SCALE_X) / 2f
+        view.translationY = bottomEdge - view.top - view.height * (1f + SCALE_Y) / 2f
     }
 
     /** 旁边图标的上下沿。网速是两行字，底部和电池齐，用它做参考。 */
@@ -143,7 +144,7 @@ object DualSignalLayout {
     }
 
     private fun reset(view: View) {
-        if (view.scaleX == 1f && view.translationY == 0f) return
+        if (view.scaleX == 1f && view.scaleY == 1f && view.translationY == 0f) return
         view.scaleX = 1f
         view.scaleY = 1f
         view.translationY = 0f
